@@ -1,0 +1,272 @@
+# index_server.py
+import socket
+import threading
+import time
+from config import INDEX_HOST, INDEX_PORT, MONITOR_HOST, MONITOR_TCP_PORT
+
+# server_id -> server_info
+content_servers = {}  # {"S1": {"ip": "127.0.0.1", "tcp_port": 7001, "udp_port": 7002}}
+
+# file_name -> {"size": int, "servers": [server_id, ...]}
+file_index = {}  # {"test1.txt": {"size": 12, "servers": ["S1","S2"]}}
+
+# Index'in dead olarak işaretlediği server'lar
+dead_servers = set()
+
+lock = threading.Lock()
+
+
+# ---------- Monitor'dan health bilgisi alma (pull) ----------
+
+def get_alive_servers_from_monitor():
+    """
+    Monitor'a TCP üzerinden LIST_SERVERS komutu gönderir,
+    alive olan server_id'leri set olarak döndürür.
+    Monitor down ise boş set döner.
+    """
+    alive = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1.5)
+        sock.connect((MONITOR_HOST, MONITOR_TCP_PORT))
+        sock.sendall(b"LIST_SERVERS\n")
+
+        data = b""
+        while True:
+            chunk = sock.recv(1024)
+            if not chunk:
+                break
+            data += chunk
+            if b"\nEND" in data:
+                break
+
+        sock.close()
+
+        text = data.decode(errors="ignore")
+        for line in text.splitlines():
+            parts = line.strip().split()
+            # SERVER <server_id> <ip> <tcp_port> <load> <status>
+            if len(parts) < 6:
+                continue
+            if parts[0] != "SERVER":
+                continue
+            server_id = parts[1]
+            status = parts[5]
+            if status.lower() == "alive":
+                alive.add(server_id)
+    except Exception:
+        pass
+
+    return alive
+
+
+# ---------- Content Server protokolü ----------
+
+def handle_content_server(conn, addr, f, first_line):
+    """
+    REGISTER / ADD_FILE / DONE_FILES komutlarını işler.
+    """
+    print(f"[INDEX] Content server bağlandı: {addr}")
+
+    def process_line(line: str):
+        line = line.strip()
+        if not line:
+            return
+
+        parts = line.split()
+        cmd = parts[0]
+
+        if cmd == "REGISTER":
+            # REGISTER <server_id> <server_tcp_port> <server_udp_port>
+            if len(parts) != 4:
+                conn.sendall(b"ERROR INVALID_REGISTER\n")
+                return
+
+            server_id = parts[1]
+            tcp_port = int(parts[2])
+            udp_port = int(parts[3])
+
+            with lock:
+                content_servers[server_id] = {
+                    "ip": addr[0],
+                    "tcp_port": tcp_port,
+                    "udp_port": udp_port,
+                }
+                # yeni register olduysa dead setinden çıkar (restart senaryosu)
+                if server_id in dead_servers:
+                    dead_servers.remove(server_id)
+
+            print(f"[INDEX] Kayit: {server_id} -> {addr[0]}:{tcp_port}")
+            conn.sendall(b"OK REGISTERED\n")
+
+        elif cmd == "ADD_FILE":
+            # ADD_FILE <server_id> <file_name> <file_size_bytes>
+            if len(parts) < 4:
+                print("[INDEX] Hatalı ADD_FILE:", parts)
+                return
+
+            srv_id = parts[1]
+            file_name = parts[2]
+            size = int(parts[3])
+
+            with lock:
+                if file_name not in file_index:
+                    file_index[file_name] = {"size": size, "servers": []}
+
+                # aynı dosya farklı server'da farklı size ise en son geleni baz al
+                file_index[file_name]["size"] = size
+
+                if srv_id not in file_index[file_name]["servers"]:
+                    file_index[file_name]["servers"].append(srv_id)
+
+            print(f"[INDEX] ADD_FILE: {file_name} ({size} bytes) -> {srv_id}")
+
+        elif cmd == "DONE_FILES":
+            conn.sendall(b"OK FILES_ADDED\n")
+            print("[INDEX] DONE_FILES alındı, OK FILES_ADDED gönderildi.")
+
+        else:
+            print("[INDEX] Bilinmeyen komut:", line)
+
+    # ilk satırı işle
+    process_line(first_line)
+
+    # sonraki satırlar
+    for line in f:
+        process_line(line)
+
+    conn.close()
+    print(f"[INDEX] Content server bağlantısı kapandı: {addr}")
+
+
+# ---------- Monitor -> Index (push) SERVER_DOWN ----------
+
+def handle_monitor_push(conn, addr, f, first_line):
+    """
+    Monitor'un proaktif bildirimleri:
+      SERVER_DOWN <server_id> <timestamp>
+    """
+    line = first_line.strip()
+    parts = line.split()
+
+    if len(parts) >= 2 and parts[0] == "SERVER_DOWN":
+        server_id = parts[1]
+        ts = parts[2] if len(parts) >= 3 else str(int(time.time()))
+
+        with lock:
+            dead_servers.add(server_id)
+
+        print(f"[INDEX] ALERT: SERVER_DOWN {server_id} ts={ts}")
+        conn.sendall(b"OK SERVER_DOWN_RECEIVED\n")
+    else:
+        conn.sendall(b"ERROR UNKNOWN_COMMAND\n")
+
+    conn.close()
+
+
+# ---------- Client protokolü ----------
+
+def select_content_server_for_file(file_name):
+    """
+    Dosyası olan server'lar bulunur,
+    Monitor'dan alive bilgisi çekilir ve Index'in dead seti ile de filtrelenir.
+    Seçim: ilk uygun server.
+    """
+    with lock:
+        entry = file_index.get(file_name)
+
+    if not entry:
+        return None
+
+    server_ids = entry["servers"]
+    if not server_ids:
+        return None
+
+    alive = get_alive_servers_from_monitor()
+    if not alive:
+        alive = set(server_ids)
+
+    with lock:
+        for sid in server_ids:
+            if sid in dead_servers:
+                continue
+            if sid in alive and sid in content_servers:
+                info = content_servers[sid]
+                return sid, info, entry["size"]
+
+    return None
+
+
+def handle_client(conn, addr, f, first_line):
+    print(f"[INDEX] Client bağlandı: {addr}")
+
+    if first_line.strip() != "HELLO":
+        conn.sendall(b"ERROR EXPECTED_HELLO\n")
+        conn.close()
+        return
+
+    conn.sendall(b"WELCOME MICRO-CDN\n")
+
+    line = f.readline()
+    if not line:
+        conn.close()
+        return
+
+    parts = line.strip().split()
+    if len(parts) != 2 or parts[0] != "GET":
+        conn.sendall(b"ERROR INVALID_COMMAND\n")
+        conn.close()
+        return
+
+    file_name = parts[1]
+    result = select_content_server_for_file(file_name)
+    if not result:
+        conn.sendall(b"ERROR FILE_NOT_FOUND\n")
+        conn.close()
+        return
+
+    server_id, info, size = result
+    msg = f"SERVER {info['ip']} {info['tcp_port']} {server_id} {size}\n"
+    conn.sendall(msg.encode())
+    conn.close()
+    print(f"[INDEX] {file_name} için {server_id} seçildi. size={size}")
+
+
+# ---------- Genel bağlantı yöneticisi ----------
+
+def connection_handler(conn, addr):
+    f = conn.makefile("r", encoding="utf-8", newline="\n")
+    first_line = f.readline()
+    if not first_line:
+        conn.close()
+        return
+
+    # Monitor push mesajı
+    if first_line.startswith("SERVER_DOWN"):
+        handle_monitor_push(conn, addr, f, first_line)
+        return
+
+    # Content server
+    if first_line.startswith("REGISTER") or first_line.startswith("ADD_FILE"):
+        handle_content_server(conn, addr, f, first_line)
+        return
+
+    # Client
+    handle_client(conn, addr, f, first_line)
+
+
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((INDEX_HOST, INDEX_PORT))
+    sock.listen(50)
+    print(f"[INDEX] Dinliyorum: {INDEX_HOST}:{INDEX_PORT}")
+
+    while True:
+        conn, addr = sock.accept()
+        t = threading.Thread(target=connection_handler, args=(conn, addr), daemon=True)
+        t.start()
+
+
+if __name__ == "__main__":
+    main()

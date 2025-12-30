@@ -18,47 +18,29 @@ lock = threading.Lock()
 
 # ---------- Monitor'dan health bilgisi alma (pull) ----------
 
-def get_alive_servers_from_monitor():
-    """
-    Monitor'a TCP üzerinden LIST_SERVERS komutu gönderir,
-    alive olan server_id'leri set olarak döndürür.
-    Monitor down ise boş set döner.
-    """
-    alive = set()
+def get_detailed_status_from_monitor():
+    server_status = {}
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1.5)
         sock.connect((MONITOR_HOST, MONITOR_TCP_PORT))
         sock.sendall(b"LIST_SERVERS\n")
 
-        data = b""
-        while True:
-            chunk = sock.recv(1024)
-            if not chunk:
-                break
-            data += chunk
-            if b"\nEND" in data:
-                break
-
+        # Makefile kullanımı daha güvenli okuma sağlar
+        f = sock.makefile("r", encoding="utf-8")
+        for line in f:
+            line = line.strip()
+            if line == "END": break
+            parts = line.split()
+            if len(parts) >= 6 and parts[0] == "SERVER":
+                sid = parts[1]
+                load = int(parts[4])
+                status = parts[5].lower()
+                server_status[sid] = {"load": load, "status": status}
         sock.close()
-
-        text = data.decode(errors="ignore")
-        for line in text.splitlines():
-            parts = line.strip().split()
-            # SERVER <server_id> <ip> <tcp_port> <load> <status>
-            if len(parts) < 6:
-                continue
-            if parts[0] != "SERVER":
-                continue
-            server_id = parts[1]
-            status = parts[5]
-            if status.lower() == "alive":
-                alive.add(server_id)
     except Exception:
         pass
-
-    return alive
-
+    return server_status
 
 # ---------- Content Server protokolü ----------
 
@@ -181,18 +163,30 @@ def select_content_server_for_file(file_name):
     server_ids = entry["servers"]
     if not server_ids:
         return None
-
-    alive = get_alive_servers_from_monitor()
-    if not alive:
-        alive = set(server_ids)
+# Monitor'den tüm sunucuların güncel durumunu (load dahil) alıyoruz [cite: 121, 125]
+    alive_info = get_detailed_status_from_monitor() 
+    
+    best_sid = None
+    min_load = float('inf')
+    file_size = entry["size"]
 
     with lock:
         for sid in server_ids:
+            # 1. Index'in kendi dead listesinde mi?
             if sid in dead_servers:
                 continue
-            if sid in alive and sid in content_servers:
-                info = content_servers[sid]
-                return sid, info, entry["size"]
+            
+            # 2. Monitor bu sunucu için 'alive' diyor mu ve yükü ne?
+            if sid in alive_info and alive_info[sid]['status'] == 'alive':
+                current_load = alive_info[sid]['load']
+                
+                # En düşük yüklü olanı seç 
+                if current_load < min_load:
+                    min_load = current_load
+                    best_sid = sid
+
+    if best_sid:
+        return best_sid, content_servers[best_sid], file_size
 
     return None
 

@@ -15,7 +15,7 @@ lock = threading.Lock()
 
 def notify_index_server_down(server_id: str):
     """
-    Monitor, server dead tespit edince Index'e proaktif bildirim yollar:
+    When the Monitor detects a dead server, it proactively notifies the Index:
       SERVER_DOWN <server_id> <timestamp>
     """
     try:
@@ -29,15 +29,15 @@ def notify_index_server_down(server_id: str):
         # opsiyonel ack
         _ = s.recv(1024)
         s.close()
-        print(f"[MONITOR] Index'e bildirildi: SERVER_DOWN {server_id}")
+        print(f"[MONITOR] Index notified: SERVER_DOWN {server_id}")
     except Exception as e:
-        print(f"[MONITOR] Index'e SERVER_DOWN gönderilemedi ({server_id}): {e}")
+        print(f"[MONITOR] Failed to send SERVER_DOWN notification to Index ({server_id}):{e}")
 
 
 def udp_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((MONITOR_HOST, MONITOR_UDP_PORT))
-    print(f"[MONITOR] UDP dinliyor: {MONITOR_HOST}:{MONITOR_UDP_PORT}")
+    print(f"[MONITOR] Listening on UDP:{MONITOR_HOST}:{MONITOR_UDP_PORT}")
 
     while True:
         data, addr = sock.recvfrom(1024)
@@ -46,7 +46,7 @@ def udp_listener():
 
         # HEARTBEAT <server_id> <ip> <tcp_port> <load> <num_files>
         if len(parts) != 6 or parts[0] != "HEARTBEAT":
-            print("[MONITOR] Geçersiz heartbeat:", line)
+            print("[MONITOR] Invalid heartbeat:", line)
             continue
 
         _, server_id, ip, tcp_port, load, num_files = parts
@@ -58,7 +58,7 @@ def udp_listener():
         print(f"[MONITOR] Heartbeat from {server_id}: load={load}, files={num_files}")
 
         with lock:
-            # eğer server tekrar heartbeat atmaya başladıysa alive yap
+            # If it started heartbeating again, make it alive
             servers[server_id] = {
                 "ip": ip,
                 "tcp_port": tcp_port,
@@ -81,7 +81,7 @@ def timeout_checker():
                     print(f"[MONITOR] {sid} -> DEAD (timeout)")
                     to_notify.append(sid)
 
-        # lock dışına çıkıp Index'e bildir (bloklamasın)
+        # Notify the Index outside the lock to avoid blocking
         for sid in to_notify:
             notify_index_server_down(sid)
 
@@ -93,7 +93,7 @@ def tcp_server():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((MONITOR_HOST, MONITOR_TCP_PORT))
     sock.listen(5)
-    print(f"[MONITOR] TCP dinliyor: {MONITOR_HOST}:{MONITOR_TCP_PORT}")
+    print(f"[MONITOR] TCP listening: {MONITOR_HOST}:{MONITOR_TCP_PORT}")
 
     while True:
         conn, addr = sock.accept()
@@ -122,7 +122,7 @@ def main():
     threading.Thread(target=timeout_checker, daemon=True).start()
     threading.Thread(target=tcp_server, daemon=True).start()
 
-    print("[MONITOR] Çalışıyor...")
+    print("[MONITOR] Monitor Server is running...")
     while True:
         time.sleep(1)
 

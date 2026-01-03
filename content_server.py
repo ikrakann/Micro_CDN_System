@@ -13,10 +13,10 @@ def register_with_index(server_id, tcp_port, udp_port, files_dir):
     # REGISTER
     msg = f"REGISTER {server_id} {tcp_port} {udp_port}\n"
     s.sendall(msg.encode())
-    print(f"[{server_id}] REGISTER gönderildi.")
+    print(f"[{server_id}] REGISTER sent.")
     print(s.recv(1024).decode().strip())
 
-    # dosya listesi
+    # file list
     for fname in os.listdir(files_dir):
         path = os.path.join(files_dir, fname)
         if os.path.isfile(path):
@@ -30,7 +30,7 @@ def register_with_index(server_id, tcp_port, udp_port, files_dir):
 
 
 def handle_client(conn, addr, files_dir, server_id):
-    print(f"[{server_id}] Client bağlandı: {addr}")
+    print(f"[{server_id}] Client connected: {addr}")
     line = conn.recv(1024).decode()
     parts = line.strip().split()
     if len(parts) != 2 or parts[0] != "GET":
@@ -58,14 +58,14 @@ def handle_client(conn, addr, files_dir, server_id):
             conn.sendall(data)
 
     conn.close()
-    print(f"[{server_id}] {file_name} gönderildi.")
+    print(f"[{server_id}] {file_name} was sended to client.")
 
 
 def tcp_server(server_id, tcp_port, files_dir):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("0.0.0.0", tcp_port))
     sock.listen(5)
-    print(f"[{server_id}] TCP port {tcp_port} dinleniyor")
+    print(f"[{server_id}] Listening on TCP port {tcp_port}")
 
     while True:
         conn, addr = sock.accept()
@@ -78,7 +78,7 @@ def tcp_server(server_id, tcp_port, files_dir):
 def heartbeat_sender(server_id, tcp_port, files_dir, udp_port):
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     while True:
-        # load = aktif client sayısı gibi geliştirilebilir, şimdilik 0
+        # load can be extended (e.g., active client count); currently set to 0
         load = 0
         num_files = len([f for f in os.listdir(files_dir)
                          if os.path.isfile(os.path.join(files_dir, f))])
@@ -90,7 +90,7 @@ def heartbeat_sender(server_id, tcp_port, files_dir, udp_port):
 
 def main():
     if len(sys.argv) != 5:
-        print("Kullanım: python content_server.py <SERVER_ID> <TCP_PORT> <UDP_PORT> <FILES_DIR>")
+        print("Usage: python content_server.py <SERVER_ID> <TCP_PORT> <UDP_PORT> <FILES_DIR>")
         sys.exit(1)
 
     server_id = sys.argv[1]
@@ -110,7 +110,7 @@ def main():
                           daemon=True)
     t2.start()
 
-    print(f"[{server_id}] Content Server çalışıyor...")
+    print(f"[{server_id}] Content Server is running...")
     while True:
         time.sleep(1)
 

@@ -27,7 +27,7 @@ def download_from_content(ip, port, file_name, out_path):
 
     parts = header.split()
     if parts[0] != "OK":
-        print("[CLIENT] Hata:", header)
+        print("[CLIENT] Error:", header)
         s.close()
         return
 
@@ -42,11 +42,11 @@ def download_from_content(ip, port, file_name, out_path):
             remaining -= len(data)
 
     s.close()
-    print(f"[CLIENT] İndirme tamamlandı: {out_path}, beklenen={size}, kalan={remaining}")
+    print(f"[CLIENT] Download completed: {out_path}, expected={size}, remaining={remaining}")
 
 
 def main():
-    file_name = input("İstediğin dosya adı: ").strip()
+    file_name = input("File name you want: ").strip()
 
     resp = ask_index_for_file(file_name)
     if resp.startswith("ERROR"):
@@ -56,12 +56,12 @@ def main():
     # SERVER <ip> <tcp_port> <server_id> <file_size_bytes>
     parts = resp.split()
     if len(parts) != 5 or parts[0] != "SERVER":
-        print("[CLIENT] Beklenmeyen cevap:", resp)
+        print("[CLIENT] Unexpected response:", resp)
         return
 
     _, ip, port, server_id, size_hint = parts
     port = int(port)
-    print(f"[CLIENT] Index {file_name} için {server_id} verdi ({ip}:{port})")
+    print(f"[CLIENT] Index {file_name} provided for {server_id} ({ip}:{port})")
 
     download_from_content(ip, port, file_name, f"download_{file_name}")
 

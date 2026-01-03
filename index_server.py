@@ -4,25 +4,25 @@ import threading
 import time
 from config import INDEX_HOST, INDEX_PORT, MONITOR_HOST, MONITOR_TCP_PORT
 
-# server_id -> server_info
+# server_id -> server information
 content_servers = {}  # {"S1": {"ip": "127.0.0.1", "tcp_port": 7001, "udp_port": 7002}}
 
 # file_name -> {"size": int, "servers": [server_id, ...]}
 file_index = {}  # {"test1.txt": {"size": 12, "servers": ["S1","S2"]}}
 
-# Index'in dead olarak işaretlediği server'lar
+# Servers marked as dead by the Index Server
 dead_servers = set()
 
 lock = threading.Lock()
 
 
-# ---------- Monitor'dan health bilgisi alma (pull) ----------
+# ---------- Getting health information from Monitor (pull) ----------
 
 def get_alive_servers_from_monitor():
     """
-    Monitor'a TCP üzerinden LIST_SERVERS komutu gönderir,
-    alive olan server_id'leri set olarak döndürür.
-    Monitor down ise boş set döner.
+    Sends the LIST_SERVERS command to the Monitor over TCP
+    and returns a set of server_ids that are marked as alive.
+    Returns an empty set if the Monitor is unreachable.
     """
     alive = set()
     try:
@@ -60,13 +60,13 @@ def get_alive_servers_from_monitor():
     return alive
 
 
-# ---------- Content Server protokolü ----------
+# ---------- Content Server protocol ----------
 
 def handle_content_server(conn, addr, f, first_line):
     """
-    REGISTER / ADD_FILE / DONE_FILES komutlarını işler.
+    Proceeds REGISTER / ADD_FILE / DONE_FILES commands.
     """
-    print(f"[INDEX] Content server bağlandı: {addr}")
+    print(f"[INDEX] Content server connected: {addr}")
 
     def process_line(line: str):
         line = line.strip()
@@ -92,11 +92,11 @@ def handle_content_server(conn, addr, f, first_line):
                     "tcp_port": tcp_port,
                     "udp_port": udp_port,
                 }
-                # yeni register olduysa dead setinden çıkar (restart senaryosu)
+                # newly registered server is removed from dead set (restart scenario)
                 if server_id in dead_servers:
                     dead_servers.remove(server_id)
 
-            print(f"[INDEX] Kayit: {server_id} -> {addr[0]}:{tcp_port}")
+            print(f"[INDEX] Registered: {server_id} -> {addr[0]}:{tcp_port}")
             conn.sendall(b"OK REGISTERED\n")
 
         elif cmd == "ADD_FILE":
@@ -113,7 +113,7 @@ def handle_content_server(conn, addr, f, first_line):
                 if file_name not in file_index:
                     file_index[file_name] = {"size": size, "servers": []}
 
-                # aynı dosya farklı server'da farklı size ise en son geleni baz al
+                # Consider the last one if same file with different size on different servers.
                 file_index[file_name]["size"] = size
 
                 if srv_id not in file_index[file_name]["servers"]:
@@ -123,10 +123,10 @@ def handle_content_server(conn, addr, f, first_line):
 
         elif cmd == "DONE_FILES":
             conn.sendall(b"OK FILES_ADDED\n")
-            print("[INDEX] DONE_FILES alındı, OK FILES_ADDED gönderildi.")
+            print("[INDEX] DONE_FILES received, OK FILES_ADDED sent.")
 
         else:
-            print("[INDEX] Bilinmeyen komut:", line)
+            print("[INDEX] Unknown command:", line)
 
     # ilk satırı işle
     process_line(first_line)
@@ -136,14 +136,14 @@ def handle_content_server(conn, addr, f, first_line):
         process_line(line)
 
     conn.close()
-    print(f"[INDEX] Content server bağlantısı kapandı: {addr}")
+    print(f"[INDEX] Content server connection closed: {addr}")
 
 
 # ---------- Monitor -> Index (push) SERVER_DOWN ----------
 
 def handle_monitor_push(conn, addr, f, first_line):
     """
-    Monitor'un proaktif bildirimleri:
+    Proactive notifications from Monitor:
       SERVER_DOWN <server_id> <timestamp>
     """
     line = first_line.strip()
@@ -164,13 +164,13 @@ def handle_monitor_push(conn, addr, f, first_line):
     conn.close()
 
 
-# ---------- Client protokolü ----------
+# ---------- Client protocol ----------
 
 def select_content_server_for_file(file_name):
     """
-    Dosyası olan server'lar bulunur,
-    Monitor'dan alive bilgisi çekilir ve Index'in dead seti ile de filtrelenir.
-    Seçim: ilk uygun server.
+    Servers that host the requested file are identified.
+    Alive server information is retrieved from the Monitor and filtered using the Index's dead server set.
+    Selection policy: the first suitable server.
     """
     with lock:
         entry = file_index.get(file_name)
@@ -198,7 +198,7 @@ def select_content_server_for_file(file_name):
 
 
 def handle_client(conn, addr, f, first_line):
-    print(f"[INDEX] Client bağlandı: {addr}")
+    print(f"[INDEX] Client connected: {addr}")
 
     if first_line.strip() != "HELLO":
         conn.sendall(b"ERROR EXPECTED_HELLO\n")
@@ -229,10 +229,10 @@ def handle_client(conn, addr, f, first_line):
     msg = f"SERVER {info['ip']} {info['tcp_port']} {server_id} {size}\n"
     conn.sendall(msg.encode())
     conn.close()
-    print(f"[INDEX] {file_name} için {server_id} seçildi. size={size}")
+    print(f"[INDEX] For {file_name} , {server_id} selected. size={size}")
 
 
-# ---------- Genel bağlantı yöneticisi ----------
+# ---------- General connection handler ----------
 
 def connection_handler(conn, addr):
     f = conn.makefile("r", encoding="utf-8", newline="\n")
@@ -260,7 +260,7 @@ def main():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((INDEX_HOST, INDEX_PORT))
     sock.listen(50)
-    print(f"[INDEX] Dinliyorum: {INDEX_HOST}:{INDEX_PORT}")
+    print(f"[INDEX] Listening on {INDEX_HOST}:{INDEX_PORT}")
 
     while True:
         conn, addr = sock.accept()

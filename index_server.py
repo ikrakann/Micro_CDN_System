@@ -26,7 +26,7 @@ def get_detailed_status_from_monitor():
         sock.connect((MONITOR_HOST, MONITOR_TCP_PORT))
         sock.sendall(b"LIST_SERVERS\n")
 
-        # Makefile kullanımı daha güvenli okuma sağlar
+    
         f = sock.makefile("r", encoding="utf-8")
         for line in f:
             line = line.strip()
@@ -163,7 +163,7 @@ def select_content_server_for_file(file_name):
     server_ids = entry["servers"]
     if not server_ids:
         return None
-# Monitor'den tüm sunucuların güncel durumunu (load dahil) alıyoruz [cite: 121, 125]
+# Monitor'den tüm sunucuların güncel durumunu (load dahil) alıyoruz
     alive_info = get_detailed_status_from_monitor() 
     
     best_sid = None

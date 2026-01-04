@@ -12,6 +12,8 @@ file_index = {}  # {"test1.txt": {"size": 12, "servers": ["S1","S2"]}}
 
 # Servers marked as dead by the Index Server
 dead_servers = set()
+#for each file , keep track of last used server for round robin
+round_robin_index = {}
 
 lock = threading.Lock()
 
@@ -163,33 +165,33 @@ def select_content_server_for_file(file_name):
     server_ids = entry["servers"]
     if not server_ids:
         return None
-# Monitor'den tüm sunucuların güncel durumunu (load dahil) alıyoruz
+    # Retrieve current status (including load) of all servers from the Monitor
     alive_info = get_detailed_status_from_monitor() 
     
-    best_sid = None
-    min_load = float('inf')
     file_size = entry["size"]
 
     with lock:
-        for sid in server_ids:
-            # 1. Index'in kendi dead listesinde mi?
+        # Initialize round-robin index for this file if it is requested for the first time
+        if file_name not in round_robin_index:
+            round_robin_index[file_name] = 0
+
+        start_idx = round_robin_index[file_name]
+        n = len(server_ids)
+
+        for i in range(n):
+            idx = (start_idx + i) % n
+            sid = server_ids[idx]
+
+            # Skip servers marked as dead by the Index Server
             if sid in dead_servers:
                 continue
-            
-            # 2. Monitor bu sunucu için 'alive' diyor mu ve yükü ne?
-            if sid in alive_info and alive_info[sid]['status'] == 'alive':
-                current_load = alive_info[sid]['load']
-                
-                # En düşük yüklü olanı seç 
-                if current_load < min_load:
-                    min_load = current_load
-                    best_sid = sid
 
-    if best_sid:
-        return best_sid, content_servers[best_sid], file_size
-
+            # Select the server if the Monitor reports it as alive
+            if sid in alive_info and alive_info[sid]["status"] == "alive":
+                # Advance round-robin pointer for the next request
+                round_robin_index[file_name] = (idx + 1) % n
+                return sid, content_servers[sid], file_size
     return None
-
 
 def handle_client(conn, addr, f, first_line):
     print(f"[INDEX] Client connected: {addr}")
